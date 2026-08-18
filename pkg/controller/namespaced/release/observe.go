@@ -162,10 +162,14 @@ func isUpToDate(ctx context.Context, kube client.Client, spec *v1beta1.ReleaseSp
 		}
 	} else {
 		// URL mode: non-OCI URLs ignore the spec version entirely, while OCI
-		// URLs reconcile the URL version with the spec version. A conflict is
-		// reported as drift so the deploy surfaces its hard error.
-		ev, err := helmClient.EffectiveChartVersion(in.Chart.URL, in.Chart.Version)
-		if err != nil || (ev != "" && ev != ocm.Version) {
+		// URLs reconcile the URL version with the spec version.
+		ev, verr := helmClient.EffectiveChartVersion(in.Chart.URL, in.Chart.Version)
+		if verr != nil {
+			// A URL/spec version conflict is drift, not a reconcile error:
+			// reporting not-up-to-date lets the deploy surface its hard error.
+			return false, nil //nolint:nilerr // see above
+		}
+		if ev != "" && ev != ocm.Version {
 			return false, nil
 		}
 	}
