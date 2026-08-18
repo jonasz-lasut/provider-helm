@@ -900,6 +900,11 @@ func Test_withRelease(t *testing.T) {
 					InsecureSkipTLSVerify: true,
 					PlainHTTP:             true,
 					TakeOwnership:         true,
+					Labels: map[string]string{
+						helmClient.LabelDigestHash:     helmClient.LabelValueDelete,
+						helmClient.LabelURLHash:        helmClient.LabelValueDelete,
+						helmClient.LabelOwnershipTaken: "true",
+					},
 				},
 			},
 		},
@@ -913,6 +918,10 @@ func Test_withRelease(t *testing.T) {
 				args: helmClient.Args{
 					Timeout:       5 * time.Minute, // default timeout
 					TakeOwnership: false,
+					Labels: map[string]string{
+						helmClient.LabelDigestHash: helmClient.LabelValueDelete,
+						helmClient.LabelURLHash:    helmClient.LabelValueDelete,
+					},
 				},
 			},
 		},

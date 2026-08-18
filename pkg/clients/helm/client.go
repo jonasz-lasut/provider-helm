@@ -60,6 +60,7 @@ const (
 	errUnexpectedOCIUrlTmpl            = "url not prefixed with oci://, got [%s]"
 	errDigestNotSupportedForNonOCI     = "digest is only supported for OCI registries"
 	errDigestMismatchTmpl              = "conflicting digest input: URL contains @%s but spec.forProvider.chart.digest is %s"
+	errVersionMismatchTmpl             = "conflicting version input: URL contains :%s but spec.forProvider.chart.version is %s"
 	errNoChartName                     = "spec.forProvider.chart.name must be specified when URL is empty"
 	errNoChartRepository               = "spec.forProvider.chart.repository must be specified when URL is empty"
 	errFailedToInitActionConfig        = "failed to initialize helm action configuration"
@@ -167,6 +168,9 @@ func NewClient(log logging.Logger, restConfig *rest.Config, argAppliers ...ArgsA
 	ic.PlainHTTP = args.PlainHTTP
 	ic.TakeOwnership = args.TakeOwnership
 	ic.ForceConflicts = args.SSAForceConflicts
+	// Install stores labels verbatim; only upgrade's label merge understands
+	// the "null" deletion convention, so those entries must not reach install.
+	ic.Labels = withoutDeletedLabels(args.Labels)
 
 	uc := action.NewUpgrade(actionConfig)
 	uc.WaitStrategy = waitStrategy
@@ -177,6 +181,7 @@ func NewClient(log logging.Logger, restConfig *rest.Config, argAppliers ...ArgsA
 	uc.TakeOwnership = args.TakeOwnership
 	uc.MaxHistory = args.MaxHistory
 	uc.ForceConflicts = args.SSAForceConflicts
+	uc.Labels = args.Labels
 
 	uic := action.NewUninstall(actionConfig)
 	uic.WaitStrategy = waitStrategy
@@ -205,6 +210,23 @@ func NewClient(log logging.Logger, restConfig *rest.Config, argAppliers ...ArgsA
 // to prevent path traversal attacks. It ensures only the base filename is used.
 func safePath(baseDir, fileName string) string {
 	return filepath.Join(baseDir, filepath.Base(fileName))
+}
+
+// withoutDeletedLabels returns labels minus the entries carrying the
+// LabelValueDelete marker. Returns nil when nothing remains so that actions
+// treat it as "no custom labels".
+func withoutDeletedLabels(labels map[string]string) map[string]string {
+	var out map[string]string
+	for k, v := range labels {
+		if v == LabelValueDelete {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]string, len(labels))
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func getChartFileName(dir string) (string, error) {
@@ -349,6 +371,39 @@ func resolveEffectiveDigest(urlDigest, specDigest string) (string, error) {
 		return urlDigest, nil
 	}
 	return specDigest, nil
+}
+
+// EffectiveChartVersion returns the version a deploy of the given chart URL
+// would pin: the version embedded in an OCI URL reconciled with the spec
+// version, where conflicts are errors. Non-OCI URLs return "" since they
+// ignore the spec version entirely.
+func EffectiveChartVersion(chartURL, specVersion string) (string, error) {
+	if !registry.IsOCI(chartURL) {
+		return "", nil
+	}
+	_, urlVersion, _, err := resolveOCIChartVersionAndDigest(chartURL)
+	if err != nil {
+		return "", err
+	}
+	return resolveEffectiveVersion(urlVersion, specVersion)
+}
+
+// resolveEffectiveVersion reconciles the version embedded in an OCI chart URL
+// with spec.forProvider.chart.version, mirroring resolveEffectiveDigest.
+// Conflicting values are rejected rather than silently resolved in favor of
+// the URL. A devel spec version is treated as unset since it does not pin a
+// concrete version.
+func resolveEffectiveVersion(urlVersion, specVersion string) (string, error) {
+	if specVersion == devel {
+		specVersion = ""
+	}
+	if specVersion != "" && urlVersion != "" && urlVersion != specVersion {
+		return "", errors.Errorf(errVersionMismatchTmpl, urlVersion, specVersion)
+	}
+	if urlVersion != "" {
+		return urlVersion, nil
+	}
+	return specVersion, nil
 }
 
 func (hc *client) PullAndLoadChart(mg resource.Managed, creds *RepoCreds) (*chart.Chart, error) { //nolint:gocyclo

@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/crossplane-contrib/provider-helm/apis/cluster/release/v1beta1"
+	helmClient "github.com/crossplane-contrib/provider-helm/pkg/clients/helm"
 )
 
 const (
@@ -547,6 +548,292 @@ func Test_isUpToDate(t *testing.T) {
 						Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 					},
 				},
+			},
+			want: want{
+				out: true,
+				err: nil,
+			},
+		},
+		"NotUpToDate_DigestLabelDrift": {
+			// The digest label written at deploy time records a different
+			// digest than the spec asks for; the stale status digest matching
+			// the spec must not mask the drift.
+			args: args{
+				kube: &test.MockClient{
+					MockGet: nil,
+				},
+				spec: &v1beta1.ReleaseSpec{
+					ForProvider: v1beta1.ReleaseParameters{
+						Chart: v1beta1.ChartSpec{
+							Name:    testChart,
+							Version: testVersion,
+							Digest:  "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+						},
+						ValuesSpec: v1beta1.ValuesSpec{
+							Values: runtime.RawExtension{
+								Raw: []byte(testReleaseConfigStr),
+							},
+						},
+					},
+				},
+				observed: &release.Release{
+					Info: &release.Info{},
+					Chart: &chart.Chart{
+						Raw: nil,
+						Metadata: &chart.Metadata{
+							Name:    testChart,
+							Version: testVersion,
+						},
+					},
+					Config: testReleaseConfig,
+					Labels: map[string]string{
+						helmClient.LabelDigestHash: helmClient.EncodeDigestLabel("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+					},
+				},
+				status: v1beta1.ReleaseStatus{
+					AtProvider: v1beta1.ReleaseObservation{
+						Digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+					},
+				},
+			},
+			want: want{
+				out: false,
+				err: nil,
+			},
+		},
+		"UpToDate_DigestLabelMatches": {
+			// The label records the deployed digest; an empty status digest
+			// (e.g. wiped after Create) must not matter.
+			args: args{
+				kube: &test.MockClient{
+					MockGet: nil,
+				},
+				spec: &v1beta1.ReleaseSpec{
+					ForProvider: v1beta1.ReleaseParameters{
+						Chart: v1beta1.ChartSpec{
+							Name:    testChart,
+							Version: testVersion,
+							Digest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+						},
+						ValuesSpec: v1beta1.ValuesSpec{
+							Values: runtime.RawExtension{
+								Raw: []byte(testReleaseConfigStr),
+							},
+						},
+					},
+				},
+				observed: &release.Release{
+					Info: &release.Info{},
+					Chart: &chart.Chart{
+						Raw: nil,
+						Metadata: &chart.Metadata{
+							Name:    testChart,
+							Version: testVersion,
+						},
+					},
+					Config: testReleaseConfig,
+					Labels: map[string]string{
+						helmClient.LabelDigestHash: helmClient.EncodeDigestLabel("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+					},
+				},
+				status: v1beta1.ReleaseStatus{},
+			},
+			want: want{
+				out: true,
+				err: nil,
+			},
+		},
+		"NotUpToDate_URLChangedViaLabel": {
+			args: args{
+				kube: &test.MockClient{
+					MockGet: nil,
+				},
+				spec: &v1beta1.ReleaseSpec{
+					ForProvider: v1beta1.ReleaseParameters{
+						Chart: v1beta1.ChartSpec{
+							URL: "https://charts.example.com/mychart-2.0.0.tgz",
+						},
+						ValuesSpec: v1beta1.ValuesSpec{
+							Values: runtime.RawExtension{
+								Raw: []byte(testReleaseConfigStr),
+							},
+						},
+					},
+				},
+				observed: &release.Release{
+					Info: &release.Info{},
+					Chart: &chart.Chart{
+						Raw: nil,
+						Metadata: &chart.Metadata{
+							Name:    testChart,
+							Version: testVersion,
+						},
+					},
+					Config: testReleaseConfig,
+					Labels: map[string]string{
+						helmClient.LabelURLHash: helmClient.EncodeURLLabel("https://charts.example.com/mychart-1.0.0.tgz"),
+					},
+				},
+				status: v1beta1.ReleaseStatus{},
+			},
+			want: want{
+				out: false,
+				err: nil,
+			},
+		},
+		"UpToDate_URLUnchangedViaLabel": {
+			// A stale late-initialized name must not matter in URL mode.
+			args: args{
+				kube: &test.MockClient{
+					MockGet: nil,
+				},
+				spec: &v1beta1.ReleaseSpec{
+					ForProvider: v1beta1.ReleaseParameters{
+						Chart: v1beta1.ChartSpec{
+							URL:  "https://charts.example.com/mychart-1.0.0.tgz",
+							Name: "stale-name",
+						},
+						ValuesSpec: v1beta1.ValuesSpec{
+							Values: runtime.RawExtension{
+								Raw: []byte(testReleaseConfigStr),
+							},
+						},
+					},
+				},
+				observed: &release.Release{
+					Info: &release.Info{},
+					Chart: &chart.Chart{
+						Raw: nil,
+						Metadata: &chart.Metadata{
+							Name:    testChart,
+							Version: testVersion,
+						},
+					},
+					Config: testReleaseConfig,
+					Labels: map[string]string{
+						helmClient.LabelURLHash: helmClient.EncodeURLLabel("https://charts.example.com/mychart-1.0.0.tgz"),
+					},
+				},
+				status: v1beta1.ReleaseStatus{},
+			},
+			want: want{
+				out: true,
+				err: nil,
+			},
+		},
+		"UpToDate_LegacyURLReleaseWithoutLabel": {
+			// Releases deployed before label support cannot detect URL
+			// changes; the change stays invisible, as before.
+			args: args{
+				kube: &test.MockClient{
+					MockGet: nil,
+				},
+				spec: &v1beta1.ReleaseSpec{
+					ForProvider: v1beta1.ReleaseParameters{
+						Chart: v1beta1.ChartSpec{
+							URL: "https://charts.example.com/mychart-2.0.0.tgz",
+						},
+						ValuesSpec: v1beta1.ValuesSpec{
+							Values: runtime.RawExtension{
+								Raw: []byte(testReleaseConfigStr),
+							},
+						},
+					},
+				},
+				observed: &release.Release{
+					Info: &release.Info{},
+					Chart: &chart.Chart{
+						Raw: nil,
+						Metadata: &chart.Metadata{
+							Name:    testChart,
+							Version: testVersion,
+						},
+					},
+					Config: testReleaseConfig,
+				},
+				status: v1beta1.ReleaseStatus{},
+			},
+			want: want{
+				out: true,
+				err: nil,
+			},
+		},
+		"NotUpToDate_OCIURLVersionConflictsWithSpec": {
+			// A conflicting spec version is reported as drift so the deploy
+			// surfaces its hard error.
+			args: args{
+				kube: &test.MockClient{
+					MockGet: nil,
+				},
+				spec: &v1beta1.ReleaseSpec{
+					ForProvider: v1beta1.ReleaseParameters{
+						Chart: v1beta1.ChartSpec{
+							URL:     "oci://registry.example.com/charts/mychart:1.2.3",
+							Version: "2.0.0",
+						},
+						ValuesSpec: v1beta1.ValuesSpec{
+							Values: runtime.RawExtension{
+								Raw: []byte(testReleaseConfigStr),
+							},
+						},
+					},
+				},
+				observed: &release.Release{
+					Info: &release.Info{},
+					Chart: &chart.Chart{
+						Raw: nil,
+						Metadata: &chart.Metadata{
+							Name:    testChart,
+							Version: "1.2.3",
+						},
+					},
+					Config: testReleaseConfig,
+					Labels: map[string]string{
+						helmClient.LabelURLHash: helmClient.EncodeURLLabel("oci://registry.example.com/charts/mychart:1.2.3"),
+					},
+				},
+				status: v1beta1.ReleaseStatus{},
+			},
+			want: want{
+				out: false,
+				err: nil,
+			},
+		},
+		"UpToDate_NonOCIURLIgnoresSpecVersion": {
+			// Version alongside an HTTPS URL is documented-ignored and must
+			// not cause a perpetual upgrade loop.
+			args: args{
+				kube: &test.MockClient{
+					MockGet: nil,
+				},
+				spec: &v1beta1.ReleaseSpec{
+					ForProvider: v1beta1.ReleaseParameters{
+						Chart: v1beta1.ChartSpec{
+							URL:     "https://charts.example.com/mychart-1.0.0.tgz",
+							Version: "9.9.9",
+						},
+						ValuesSpec: v1beta1.ValuesSpec{
+							Values: runtime.RawExtension{
+								Raw: []byte(testReleaseConfigStr),
+							},
+						},
+					},
+				},
+				observed: &release.Release{
+					Info: &release.Info{},
+					Chart: &chart.Chart{
+						Raw: nil,
+						Metadata: &chart.Metadata{
+							Name:    testChart,
+							Version: testVersion,
+						},
+					},
+					Config: testReleaseConfig,
+					Labels: map[string]string{
+						helmClient.LabelURLHash: helmClient.EncodeURLLabel("https://charts.example.com/mychart-1.0.0.tgz"),
+					},
+				},
+				status: v1beta1.ReleaseStatus{},
 			},
 			want: want{
 				out: true,
