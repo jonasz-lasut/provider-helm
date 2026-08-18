@@ -26,14 +26,22 @@ import (
 )
 
 // A ChartSpec defines the chart spec for a Release
+// +kubebuilder:validation:XValidation:rule="(has(self.url) && self.url != \"\") || ((has(self.name) && self.name != \"\") && (has(self.repository) && self.repository != \"\"))",message="chart name and repository are required when url is not set"
+// +kubebuilder:validation:XValidation:rule="!(has(self.digest) && self.digest != \"\") || (has(self.url) && self.url.startsWith('oci://')) || (has(self.repository) && self.repository.startsWith('oci://'))",message="digest is only supported for OCI registries (oci:// url or repository)"
 type ChartSpec struct {
-	// Repository: Helm repository URL, required if ChartSpec.URL not set
+	// Repository: Helm repository URL, required if ChartSpec.URL not set.
+	// Ignored when URL is set: the URL is then the sole pull source and also
+	// drives registry credential resolution.
 	Repository string `json:"repository,omitempty"`
-	// Name of Helm chart, required if ChartSpec.URL not set
+	// Name of Helm chart, required if ChartSpec.URL not set.
+	// Ignored when URL is set.
 	Name string `json:"name,omitempty"`
 	// Version of Helm chart. Optional when Digest is specified.
 	// If not set and Digest is not specified, gets late initialized with the latest available version.
 	// If not set and Digest is specified, version is NOT late initialized to avoid spec drift.
+	// When URL is set, the version embedded in the URL (if any) takes effect
+	// and a conflicting spec version is rejected at deploy time; version is
+	// not late initialized in URL mode.
 	// The actual deployed version is always available in status.atProvider.version for observability.
 	Version string `json:"version,omitempty"`
 	// URL to chart package (typically .tgz), optional and overrides others fields in the spec

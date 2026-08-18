@@ -284,7 +284,11 @@ func (hc *client) pullChart(chartUrl, chartName, chartVersion, chartRepo, chartD
 		}
 		pc.Version = chartVersion
 	} else if registry.IsOCI(chartUrl) {
-		ociURL, version, urlDigest, err := resolveOCIChartVersionAndDigest(chartUrl)
+		ociURL, urlVersion, urlDigest, err := resolveOCIChartVersionAndDigest(chartUrl)
+		if err != nil {
+			return err
+		}
+		version, err := resolveEffectiveVersion(urlVersion, chartVersion)
 		if err != nil {
 			return err
 		}
@@ -435,6 +439,19 @@ func (hc *client) PullAndLoadChart(mg resource.Managed, creds *RepoCreds) (*char
 		}
 	}
 
+	// Validate: without a URL the chart can only be resolved from
+	// Repository + Name. This must run before any pull, including the
+	// pull-latest shortcut below, so that misconfiguration fails with a clear
+	// error instead of an opaque helm one.
+	if chartUrl == "" {
+		switch {
+		case chartName == "":
+			return nil, errors.New(errNoChartName)
+		case chartRepo == "":
+			return nil, errors.New(errNoChartRepository)
+		}
+	}
+
 	switch {
 	case chartUrl == "" && (chartVersion == "" || chartVersion == devel) && chartDigest == "":
 		// No URL, no version, no digest -> pull latest
@@ -443,13 +460,17 @@ func (hc *client) PullAndLoadChart(mg resource.Managed, creds *RepoCreds) (*char
 			return nil, err
 		}
 	case registry.IsOCI(chartUrl):
-		u, v, urlDigest, err := resolveOCIChartVersionAndDigest(chartUrl)
+		u, urlVersion, urlDigest, err := resolveOCIChartVersionAndDigest(chartUrl)
 		if err != nil {
 			return nil, err
 		}
 
 		// validate
 		effectiveDigest, err := resolveEffectiveDigest(urlDigest, chartDigest)
+		if err != nil {
+			return nil, err
+		}
+		v, err := resolveEffectiveVersion(urlVersion, chartVersion)
 		if err != nil {
 			return nil, err
 		}
@@ -461,7 +482,7 @@ func (hc *client) PullAndLoadChart(mg resource.Managed, creds *RepoCreds) (*char
 			name := path.Base(u.Path)
 			chartFilePath = resolveCachedChartPathWithDigest(name, effectiveDigest)
 		case v == "":
-			// No version or digest in URL: pull latest
+			// No version in URL or spec, no digest: pull latest
 			chartFilePath, err = hc.pullChartToCache(chartUrl, chartName, chartVersion, chartRepo, chartDigest, creds)
 			if err != nil {
 				return nil, err
@@ -478,14 +499,9 @@ func (hc *client) PullAndLoadChart(mg resource.Managed, creds *RepoCreds) (*char
 		chartFilePath = filepath.Join(chartCache, path.Base(u.Path))
 	default:
 		// No URL: resolve from spec Repository + Name + Version + (optionally Digest)
-		switch {
-		case chartName == "":
-			return nil, errors.New(errNoChartName)
-		case chartRepo == "":
-			return nil, errors.New(errNoChartRepository)
-		case chartDigest != "":
+		if chartDigest != "" {
 			chartFilePath = resolveCachedChartPathWithDigest(chartName, chartDigest)
-		default:
+		} else {
 			chartFilePath = resolveChartFilePath(chartName, chartVersion)
 		}
 	}
