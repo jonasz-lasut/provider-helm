@@ -63,6 +63,7 @@ import (
 	clusterapis "github.com/crossplane-contrib/provider-helm/apis/cluster"
 	namespacedapis "github.com/crossplane-contrib/provider-helm/apis/namespaced"
 	"github.com/crossplane-contrib/provider-helm/internal/bootcheck"
+	helmClient "github.com/crossplane-contrib/provider-helm/pkg/clients/helm"
 	clustercontroller "github.com/crossplane-contrib/provider-helm/pkg/controller/cluster"
 	namespacedcontroller "github.com/crossplane-contrib/provider-helm/pkg/controller/namespaced"
 	"github.com/crossplane-contrib/provider-helm/pkg/version"
@@ -109,6 +110,8 @@ func main() {
 
 	cfg, err := ctrl.GetConfig()
 	kingpin.FatalIfError(err, "Cannot get API server rest config")
+
+	kingpin.FatalIfError(helmClient.EnsureContentCache(), "Cannot create chart content cache directory")
 
 	var clientOpts client.Options
 	if !*enableSecretCache {
